@@ -1,0 +1,379 @@
+/* ── Base ── */
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  width: 100%;
+  height: 100vh;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  background: #0f0f14;
+  color: #e0e0e0;
+  font-size: 13px;
+  overflow-y: auto;
+}
+
+.container {
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+}
+
+/* ── Header ── */
+header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 16px;
+}
+
+.logo {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+h1 {
+  font-size: 18px;
+  background: linear-gradient(135deg, #6366f1, #8b5cf6);
+  background-clip: text;
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  font-weight: 700;
+}
+
+.version {
+  color: #666;
+  font-size: 11px;
+}
+
+hr {
+  border: none;
+  border-top: 1px solid #1e1e2a;
+  margin: 16px 0;
+}
+
+/* ── Icons ── */
+.panel h2 i,
+.panel h3 i {
+  margin-right: 4px;
+  vertical-align: -1px;
+}
+
+.btn i {
+  margin-right: 4px;
+  font-size: 14px;
+  vertical-align: -1px;
+}
+
+/* ── Panels ── */
+.panel h2 {
+  font-size: 14px;
+  margin-bottom: 12px;
+  color: #c0c0d0;
+}
+
+.panel h3 {
+  font-size: 12px;
+  margin-bottom: 8px;
+  color: #a0a0b0;
+}
+
+/* ── Forms ── */
+.form-group {
+  margin-bottom: 12px;
+}
+
+.form-group label {
+  display: block;
+  font-size: 12px;
+  color: #9090a0;
+  margin-bottom: 4px;
+}
+
+.input-row {
+  display: flex;
+  gap: 6px;
+}
+
+input[type="text"],
+input[type="password"],
+select {
+  width: 100%;
+  padding: 8px 10px;
+  background: #1a1a24;
+  border: 1px solid #2a2a3a;
+  border-radius: 6px;
+  color: #e0e0e0;
+  font-size: 13px;
+  outline: none;
+  transition: border-color 0.2s;
+}
+
+input:focus,
+select:focus {
+  border-color: #6366f1;
+}
+
+input[type="range"] {
+  width: 100%;
+  accent-color: #6366f1;
+}
+
+input[type="checkbox"] {
+  accent-color: #6366f1;
+  margin-right: 6px;
+}
+
+/* ── Buttons ── */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 8px 16px;
+  border: none;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.btn-primary {
+  background: linear-gradient(135deg, #6366f1, #8b5cf6);
+  color: white;
+}
+
+.btn-primary:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(99, 102, 241, 0.4);
+}
+
+.btn-secondary {
+  background: #1e1e2e;
+  color: #c0c0d0;
+  border: 1px solid #2a2a3a;
+}
+
+.btn-secondary:hover:not(:disabled) {
+  background: #28283a;
+}
+
+.btn-danger {
+  background: #dc2626;
+  color: white;
+}
+
+.btn-danger:hover:not(:disabled) {
+  background: #ef4444;
+}
+
+.btn-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: #1e1e2e;
+  border: 1px solid #2a2a3a;
+  border-radius: 6px;
+  color: #e0e0e0;
+  cursor: pointer;
+  padding: 6px 10px;
+  font-size: 16px;
+}
+
+.btn-icon i {
+  margin-right: 0;
+}
+
+.btn-group {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.btn-group .btn {
+  flex: 1;
+}
+
+/* ── Status ── */
+.status {
+  font-size: 12px;
+  margin-top: 8px;
+  min-height: 18px;
+}
+
+.status.success { color: #22c55e; }
+.status.error { color: #ef4444; }
+
+.status-box {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  background: #1a1a24;
+  border-radius: 8px;
+  margin-bottom: 12px;
+  font-size: 12px;
+}
+
+.dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.dot-unknown { background: #666; }
+.dot-ready { background: #22c55e; }
+.dot-error { background: #ef4444; }
+.dot-working { background: #f59e0b; animation: pulse 1s infinite; }
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+/* ── Summary ── */
+.summary {
+  background: #1a1a24;
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin-bottom: 12px;
+}
+
+.summary ul {
+  list-style: none;
+  margin-top: 6px;
+}
+
+.summary li {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  padding: 3px 0;
+  color: #b0b0c0;
+}
+
+.summary li i {
+  color: #6366f1;
+  font-size: 14px;
+  width: 16px;
+  text-align: center;
+}
+
+/* ── Progress ── */
+.progress-bar {
+  width: 100%;
+  height: 6px;
+  background: #1e1e2e;
+  border-radius: 3px;
+  overflow: hidden;
+  margin-bottom: 6px;
+}
+
+.progress-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #6366f1, #8b5cf6);
+  border-radius: 3px;
+  transition: width 0.4s;
+  width: 0%;
+}
+
+.progress-text {
+  font-size: 11px;
+  color: #9090a0;
+  margin-bottom: 12px;
+}
+
+/* ── Log ── */
+#log-section {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.log-container {
+  flex: 1;
+  min-height: 120px;
+  max-height: none;
+  overflow-y: auto;
+  background: #111118;
+  border-radius: 8px;
+  padding: 8px;
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  font-size: 11px;
+  line-height: 1.6;
+}
+
+.log-container::-webkit-scrollbar {
+  width: 4px;
+}
+
+.log-container::-webkit-scrollbar-thumb {
+  background: #333;
+  border-radius: 2px;
+}
+
+.log-entry {
+  padding: 2px 0;
+  border-bottom: 1px solid #1a1a24;
+  display: flex;
+  align-items: flex-start;
+  gap: 4px;
+}
+
+.log-entry .time {
+  color: #555;
+  margin-right: 6px;
+  flex-shrink: 0;
+}
+
+.log-entry i {
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+
+.log-entry.info { color: #8b9cf7; }
+.log-entry.success { color: #22c55e; }
+.log-entry.error { color: #ef4444; }
+.log-entry.warn { color: #f59e0b; }
+
+/* ── Model hint ── */
+.model-hint {
+  display: block;
+  font-size: 11px;
+  color: #6b6b80;
+  margin-top: 4px;
+  line-height: 1.4;
+}
+
+/* ── Select optgroups ── */
+select optgroup {
+  color: #8b9cf7;
+  font-weight: 600;
+  font-size: 12px;
+  background: #1a1a24;
+}
+
+select option {
+  color: #e0e0e0;
+  font-weight: 400;
+  padding: 4px 8px;
+}
+
+/* ── Control panel flex growth for sidebar ── */
+#control-panel {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+}

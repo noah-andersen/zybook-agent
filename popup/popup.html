@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <link rel="stylesheet" href="../lib/phosphor/phosphor.css">
+  <link rel="stylesheet" href="../lib/phosphor/phosphor-bold.css">
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="container">
+    <header>
+      <div class="logo">
+        <i class="ph-bold ph-robot" style="font-size:22px; color:#8b9cf7;"></i>
+        <h1>ZyBook Agent</h1>
+      </div>
+      <span class="version">v1.3</span>
+    </header>
+
+    <!-- Settings Panel -->
+    <div id="settings-panel" class="panel">
+      <h2><i class="ph ph-gear-six"></i> Configuration</h2>
+      <div class="form-group">
+        <label for="api-key">OpenAI API Key</label>
+        <div class="input-row">
+          <input type="password" id="api-key" placeholder="sk-..." />
+          <button id="toggle-key" class="btn-icon" title="Show/Hide">
+            <i class="ph ph-eye" id="toggle-key-icon"></i>
+          </button>
+        </div>
+      </div>
+      <div class="form-group">
+        <label for="model-select">Model</label>
+        <select id="model-select">
+          <optgroup label="Recommended">
+            <option value="gpt-4.1" selected>GPT-4.1 (Best quality)</option>
+            <option value="gpt-4.1-mini">GPT-4.1 Mini (Fast & smart)</option>
+            <option value="gpt-4.1-nano">GPT-4.1 Nano (Fastest)</option>
+          </optgroup>
+          <optgroup label="GPT-5">
+            <option value="gpt-5.4">GPT-5.4 (Most capable)</option>
+            <option value="gpt-5.4-mini">GPT-5.4 Mini (Fast & powerful)</option>
+            <option value="gpt-5.4-nano">GPT-5.4 Nano (Cheapest)</option>
+          </optgroup>
+          <optgroup label="Reasoning (o-series)">
+            <option value="o4-mini">o4-mini (Fast reasoning)</option>
+            <option value="o3">o3 (Best reasoning)</option>
+            <option value="o3-mini">o3-mini (Efficient reasoning)</option>
+          </optgroup>
+          <optgroup label="GPT-4o">
+            <option value="gpt-4o">GPT-4o</option>
+            <option value="gpt-4o-mini">GPT-4o Mini</option>
+          </optgroup>
+          <optgroup label="Legacy">
+            <option value="gpt-4-turbo">GPT-4 Turbo</option>
+          </optgroup>
+        </select>
+        <span class="model-hint" id="model-hint"></span>
+      </div>
+      <div class="form-group">
+        <label for="auto-submit">
+          <input type="checkbox" id="auto-submit" checked />
+          Auto-submit answers
+        </label>
+      </div>
+      <div class="form-group">
+        <label for="delay-slider">Delay between actions: <span id="delay-value">1.5</span>s</label>
+        <input type="range" id="delay-slider" min="0.5" max="5" step="0.5" value="1.5" />
+      </div>
+      <button id="save-settings" class="btn btn-primary">
+        <i class="ph ph-floppy-disk"></i> Save Settings
+      </button>
+      <div id="settings-status" class="status"></div>
+    </div>
+
+    <hr />
+
+    <!-- Control Panel -->
+    <div id="control-panel" class="panel">
+      <h2><i class="ph ph-crosshair"></i> Agent Control</h2>
+      <div id="page-status" class="status-box">
+        <span class="dot dot-unknown"></span>
+        <span id="page-status-text">Checking page...</span>
+      </div>
+
+      <div class="btn-group">
+        <button id="btn-scan" class="btn btn-secondary">
+          <i class="ph ph-magnifying-glass"></i> Scan Page
+        </button>
+        <button id="btn-run" class="btn btn-primary" disabled>
+          <i class="ph ph-play"></i> Run Agent
+        </button>
+        <button id="btn-stop" class="btn btn-danger" style="display:none;">
+          <i class="ph ph-stop"></i> Stop
+        </button>
+      </div>
+
+      <div id="activity-summary" class="summary" style="display:none;">
+        <h3><i class="ph ph-list-checks"></i> Activities Found</h3>
+        <ul id="activity-list"></ul>
+      </div>
+
+      <div id="progress-section" style="display:none;">
+        <div class="progress-bar">
+          <div id="progress-fill" class="progress-fill"></div>
+        </div>
+        <p id="progress-text" class="progress-text">Starting...</p>
+      </div>
+
+      <div id="log-section">
+        <h3><i class="ph ph-terminal-window"></i> Activity Log</h3>
+        <div id="log-container" class="log-container"></div>
+      </div>
+    </div>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>
