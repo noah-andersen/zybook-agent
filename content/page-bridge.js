@@ -559,8 +559,11 @@
               const first = isEmberArr ? val.objectAt(0) : val[0];
               if (first && typeof first === 'object') {
                 const fk = Object.keys(first);
-                if (fk.some(k => /^(blockId|block_id|id|text|code|content|indent|indentation)$/.test(k))) {
-                  found.push({ path: path + '.' + key, array: val, length: len, sampleKeys: fk.slice(0, 15), isEmberArray: typeof val.pushObject === 'function' });
+                // Broadened: accept arrays with block-like props OR small data-object arrays
+                const hasBlockProps = fk.some(k => /^(blockId|block_id|id|text|code|content|indent|indentation|codeText|blockText|blockIndent)$/i.test(k));
+                const hasEnoughProps = fk.length >= 2 && fk.length <= 30 && !fk.includes('tagName') && !fk.includes('nodeName');
+                if (hasBlockProps || (hasEnoughProps && len <= 20)) {
+                  found.push({ path: path + '.' + key, array: val, length: len, sampleKeys: fk.slice(0, 20), isEmberArray: typeof val.pushObject === 'function' });
                 }
               }
             }
@@ -578,10 +581,42 @@
     const twoLists = containerEl.querySelector('.two-reorderable-lists') || containerEl;
     elements.push(twoLists);
     for (const sl of containerEl.querySelectorAll('.sortable')) elements.push(sl);
+    // Also include children of .two-reorderable-lists that might be components
+    for (const child of twoLists.querySelectorAll('*')) {
+      if (child.id || child.className) elements.push(child);
+    }
     let p = twoLists.parentElement;
     for (let i = 0; i < 8 && p; i++) { elements.push(p); p = p.parentElement; }
     const cr = containerEl.closest('[content_resource_id]');
     if (cr) { elements.push(cr); for (const c of cr.children) elements.push(c); }
+
+    // Also try to find Ember components via view registry
+    try {
+      if (window.Ember) {
+        for (const sortableEl of containerEl.querySelectorAll('.sortable, .two-reorderable-lists')) {
+          for (const key of Object.keys(sortableEl).filter(k => k.startsWith('__ember'))) {
+            const ref = sortableEl[key];
+            if (ref && ref.component) {
+              const comp = ref.component;
+              for (const ck of Object.keys(comp)) {
+                try {
+                  const val = comp[ck];
+                  if (Array.isArray(val) || (val && typeof val === 'object' && typeof val.objectAt === 'function')) {
+                    const len = typeof val.get === 'function' ? val.get('length') : val.length;
+                    if (len > 0) {
+                      const first = typeof val.objectAt === 'function' ? val.objectAt(0) : val[0];
+                      if (first && typeof first === 'object') {
+                        console.log('[ZyAgent Bridge] Component prop', ck, 'has array len=', len, 'firstKeys=', Object.keys(first).slice(0, 10));
+                      }
+                    }
+                  }
+                } catch (e) { /* skip */ }
+              }
+            }
+          }
+        }
+      }
+    } catch (e) { console.log('[ZyAgent Bridge] Ember view search error:', e.message); }
 
     const allArrays = [];
     const visited = new WeakSet();
@@ -610,11 +645,17 @@
       for (let i = 0; i < len; i++) {
         const item = a.isEmberArray ? a.array.objectAt(i) : a.array[i];
         if (item) {
-          const t = typeof item.get === 'function' ? (item.get('text') || item.get('code') || item.get('content') || '') : (item.text || item.code || item.content || '');
+          let t = '';
+          if (typeof item === 'string') { t = item; }
+          else if (typeof item.get === 'function') {
+            t = item.get('text') || item.get('code') || item.get('content') || item.get('codeText') || item.get('blockText') || item.get('label') || '';
+          } else {
+            t = item.text || item.code || item.content || item.codeText || item.blockText || item.label || '';
+          }
           items.push(t);
         }
       }
-      console.log('[ZyAgent Bridge]   Array', a.path, '| len=', len, '| ember=', a.isEmberArray, '| texts=', items.map(t => t.substring(0, 25)).join(', '));
+      console.log('[ZyAgent Bridge]   Array', a.path, '| len=', len, '| ember=', a.isEmberArray, '| sampleKeys=', a.sampleKeys, '| texts=', items.map(t => t.substring(0, 25)).join(', '));
 
       const score = (arrT, domT) => {
         if (!arrT.length || !domT.length) return 0;
@@ -711,11 +752,20 @@
           else if (typeof unusedArr.removeAt === 'function') unusedArr.removeAt(itemIndex);
           else unusedArr.splice(itemIndex, 1);
 
-          // Set indent
+          // Set indent before inserting into used list
           if (indentLevel > 0) {
             try {
-              if (typeof itemToMove.set === 'function') itemToMove.set('indent', indentLevel);
-              else if ('indent' in itemToMove) itemToMove.indent = indentLevel;
+              const setVal = (prop, val) => {
+                try {
+                  if (window.Ember && window.Ember.set) window.Ember.set(itemToMove, prop, val);
+                  else if (typeof itemToMove.set === 'function') itemToMove.set(prop, val);
+                  else if (prop in itemToMove) itemToMove[prop] = val;
+                } catch (e) { /* ignore */ }
+              };
+              setVal('indent', indentLevel);
+              setVal('indentation', indentLevel);
+              setVal('indentLevel', indentLevel);
+              console.log('[ZyAgent Bridge] Set indent =', indentLevel, 'on item before insertion, keys:', Object.keys(itemToMove).filter(k => !k.startsWith('_')).slice(0, 15));
             } catch (e) { /* ignore */ }
           }
 
@@ -894,7 +944,7 @@
 
       console.log('[ZyAgent Bridge] adjust-indent:', blockText?.substring(0, 30), 'from', Math.round(currentMargin / INDENT_PX), 'to', desiredIndent);
 
-      // Strategy 1: Ember model indent update
+      // Strategy 1: Find Ember model and update indent via Ember.set()
       const tryEmberIndent = async () => {
         try {
           const model = findEmberSortableModel(container);
@@ -905,16 +955,45 @@
             const item = typeof usedArr.objectAt === 'function' ? usedArr.objectAt(i) : usedArr[i];
             if (!item) continue;
             const t = typeof item.get === 'function' ? (item.get('text') || item.get('code') || '') : (item.text || item.code || '');
-            if (blockText && t === blockText) {
-              console.log('[ZyAgent Bridge] Found Ember item for indent update');
-              if (typeof item.set === 'function') { item.set('indent', desiredIndent); item.set('indentation', desiredIndent); }
-              else { if ('indent' in item) item.indent = desiredIndent; if ('indentation' in item) item.indentation = desiredIndent; }
+            if (blockText && (t === blockText || t.trim() === blockText.trim())) {
+              const itemKeys = Object.keys(item).filter(k => !k.startsWith('_'));
+              console.log('[ZyAgent Bridge] Found Ember item for indent update, keys:', itemKeys.slice(0, 25));
+
+              // Log current indent value
+              const currentEmberIndent = typeof item.get === 'function' ? item.get('indent') : item.indent;
+              console.log('[ZyAgent Bridge] Current Ember indent value:', currentEmberIndent, 'desired:', desiredIndent);
+
+              // Use Ember.set for proper observer notification
+              if (window.Ember && window.Ember.set) {
+                try { window.Ember.set(item, 'indent', desiredIndent); } catch (e) { console.log('[ZyAgent Bridge] Ember.set indent failed:', e.message); }
+                try { window.Ember.set(item, 'indentation', desiredIndent); } catch (e) { /* ignore */ }
+              } else if (typeof item.set === 'function') {
+                item.set('indent', desiredIndent);
+                try { item.set('indentation', desiredIndent); } catch (e) { /* ignore */ }
+              } else {
+                // Plain object fallback
+                for (const prop of itemKeys) {
+                  if (/^indent(ation|Level)?$/.test(prop)) {
+                    item[prop] = desiredIndent;
+                  }
+                }
+              }
+
+              // Also update DOM marginLeft
+              block.style.marginLeft = (desiredIndent * INDENT_PX) + 'px';
+
+              // Trigger Ember change notifications
               if (window.Ember && window.Ember.run) {
                 window.Ember.run(() => {
                   try { if (typeof usedArr.arrayContentDidChange === 'function') usedArr.arrayContentDidChange(i, 1, 1); } catch (e) { /* ignore */ }
+                  try { if (typeof usedArr.notifyPropertyChange === 'function') usedArr.notifyPropertyChange('[]'); } catch (e) { /* ignore */ }
+                  try { if (typeof item.notifyPropertyChange === 'function') item.notifyPropertyChange('indent'); } catch (e) { /* ignore */ }
                 });
               }
               await new Promise(r => setTimeout(r, 300));
+              // Verify
+              const newVal = typeof item.get === 'function' ? item.get('indent') : item.indent;
+              console.log('[ZyAgent Bridge] After set, Ember indent value:', newVal);
               return true;
             }
           }
@@ -922,7 +1001,7 @@
         return false;
       };
 
-      // Strategy 2: Horizontal drag
+      // Strategy 2: Horizontal drag with HTML5 drag events + mouse/pointer events
       const doDragIndent = async () => {
         block.scrollIntoView({ behavior: 'instant', block: 'center' });
         await new Promise(r => setTimeout(r, 50));
@@ -931,15 +1010,40 @@
         const lr = usedList.getBoundingClientRect();
         const tx = lr.x + 10 + ((desiredIndent + 0.5) * INDENT_PX);
 
+        // Try HTML5 drag events first (ember-sortable uses these)
+        try {
+          const dt = new DataTransfer();
+          block.setAttribute('draggable', 'true');
+          block.dispatchEvent(new DragEvent('dragstart', { bubbles: true, cancelable: true, clientX: sx, clientY: sy, dataTransfer: dt, view: window }));
+          await new Promise(r => setTimeout(r, 200));
+          for (let i = 1; i <= 8; i++) {
+            const cx = sx + (tx - sx) * (i / 8);
+            usedList.dispatchEvent(new DragEvent('dragover', { bubbles: true, cancelable: true, clientX: cx, clientY: sy, dataTransfer: dt, view: window }));
+            await new Promise(r => setTimeout(r, 30));
+          }
+          await new Promise(r => setTimeout(r, 100));
+          usedList.dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, clientX: tx, clientY: sy, dataTransfer: dt, view: window }));
+          block.dispatchEvent(new DragEvent('dragend', { bubbles: true, cancelable: true, clientX: tx, clientY: sy, dataTransfer: dt, view: window }));
+          await new Promise(r => setTimeout(r, 300));
+          const afterDrag = parseInt(block.style.marginLeft) || 0;
+          if (Math.round(afterDrag / INDENT_PX) === desiredIndent) return true;
+        } catch (e) { console.log('[ZyAgent Bridge] HTML5 drag indent error:', e.message); }
+
+        // Fall back to pointer+mouse events
+        block.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, clientX: sx, clientY: sy, button: 0, pointerId: 1, pointerType: 'mouse', view: window }));
         block.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, clientX: sx, clientY: sy, button: 0, view: window }));
         await new Promise(r => setTimeout(r, 300));
+        document.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, cancelable: true, clientX: sx + 2, clientY: sy, button: 0, pointerId: 1, pointerType: 'mouse', view: window }));
         document.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, cancelable: true, clientX: sx + 2, clientY: sy, button: 0, view: window }));
         await new Promise(r => setTimeout(r, 80));
         for (let i = 1; i <= 10; i++) {
-          document.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, cancelable: true, clientX: sx + (tx - sx) * (i / 10), clientY: sy, button: 0, view: window }));
-          await new Promise(r => setTimeout(r, 20));
+          const cx = sx + (tx - sx) * (i / 10);
+          document.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, cancelable: true, clientX: cx, clientY: sy, button: 0, pointerId: 1, pointerType: 'mouse', view: window }));
+          document.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, cancelable: true, clientX: cx, clientY: sy, button: 0, view: window }));
+          await new Promise(r => setTimeout(r, 25));
         }
         await new Promise(r => setTimeout(r, 200));
+        document.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, cancelable: true, clientX: tx, clientY: sy, button: 0, pointerId: 1, pointerType: 'mouse', view: window }));
         document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, clientX: tx, clientY: sy, button: 0, view: window }));
         await new Promise(r => setTimeout(r, 300));
         const newMargin = parseInt(block.style.marginLeft) || 0;
@@ -948,45 +1052,71 @@
 
       // Run strategies
       (async () => {
-        // Try Ember model first
+        // Strategy 1: Try Ember model set
         const emberOk = await tryEmberIndent();
         if (emberOk) {
+          block.style.marginLeft = desiredMargin + 'px';
           await new Promise(r => setTimeout(r, 300));
-          const newM = parseInt(block.style.marginLeft) || 0;
-          if (Math.round(newM / INDENT_PX) === desiredIndent) {
-            document.dispatchEvent(new CustomEvent('zyagent-ace-response', { detail: { requestId, success: true, method: 'ember-indent' } }));
-            return;
-          }
+          document.dispatchEvent(new CustomEvent('zyagent-ace-response', { detail: { requestId, success: true, method: 'ember-indent' } }));
+          return;
         }
 
-        // Try horizontal drag
+        // Strategy 2: Try horizontal drag (HTML5 + mouse + pointer)
         const dragOk = await doDragIndent();
         if (dragOk) {
           document.dispatchEvent(new CustomEvent('zyagent-ace-response', { detail: { requestId, success: true, method: 'horizontal-drag' } }));
           return;
         }
 
-        // Direct DOM set
+        // Strategy 3: Direct DOM set + deep Ember ref walk
         block.style.marginLeft = desiredMargin + 'px';
-        if (block.hasAttribute('data-indent')) block.setAttribute('data-indent', String(desiredIndent));
-        let el2 = block;
-        for (let d = 0; d < 5 && el2; d++) {
+        block.setAttribute('data-indent', String(desiredIndent));
+
+        // Walk block, children, and parents for __ember refs
+        const elementsToCheck = [block];
+        for (const child of block.querySelectorAll('*')) elementsToCheck.push(child);
+        let el2 = block.parentElement;
+        for (let d = 0; d < 8 && el2; d++) { elementsToCheck.push(el2); el2 = el2.parentElement; }
+
+        let foundEmberRef = false;
+        for (const checkEl of elementsToCheck) {
           try {
-            for (const key of Object.keys(el2).filter(k => k.startsWith('__ember'))) {
-              const ref = el2[key];
-              if (ref) {
-                if (ref.args && 'indent' in ref.args) ref.args.indent = desiredIndent;
-                if (ref.indent !== undefined) ref.indent = desiredIndent;
+            for (const key of Object.keys(checkEl).filter(k => k.startsWith('__ember') || k.startsWith('__EMBER'))) {
+              const ref = checkEl[key];
+              if (!ref || typeof ref !== 'object') continue;
+              if (ref.indent !== undefined) { ref.indent = desiredIndent; foundEmberRef = true; }
+              if (ref.indentation !== undefined) { ref.indentation = desiredIndent; foundEmberRef = true; }
+              if (ref.args && typeof ref.args === 'object') {
+                for (const prop of Object.keys(ref.args)) {
+                  if (/^indent(ation|Level)?$/.test(prop)) {
+                    ref.args[prop] = desiredIndent;
+                    foundEmberRef = true;
+                  }
+                }
+              }
+              if (ref.component && typeof ref.component.set === 'function') {
+                try { ref.component.set('indent', desiredIndent); foundEmberRef = true; } catch (e) { /* ignore */ }
+              }
+              if (ref.state && typeof ref.state === 'object' && ref.state.indent !== undefined) {
+                ref.state.indent = desiredIndent; foundEmberRef = true;
               }
             }
           } catch (e) { /* skip */ }
-          el2 = el2.parentElement;
         }
+
+        if (foundEmberRef) {
+          console.log('[ZyAgent Bridge] Updated Ember refs via DOM walk');
+          if (window.Ember && window.Ember.run) {
+            try { window.Ember.run.scheduleOnce('afterRender', () => {}); } catch (e) { /* ignore */ }
+          }
+        }
+
         block.dispatchEvent(new Event('change', { bubbles: true }));
+        await new Promise(r => setTimeout(r, 200));
 
         const finalM = parseInt(block.style.marginLeft) || 0;
         const ok = Math.round(finalM / INDENT_PX) === desiredIndent;
-        document.dispatchEvent(new CustomEvent('zyagent-ace-response', { detail: { requestId, success: ok || emberOk, method: ok ? 'direct-dom' : (emberOk ? 'ember-only' : 'FAILED') } }));
+        document.dispatchEvent(new CustomEvent('zyagent-ace-response', { detail: { requestId, success: ok || foundEmberRef, method: foundEmberRef ? 'ember-ref-walk' : (ok ? 'direct-dom' : 'FAILED') } }));
       })();
       return;
 
@@ -1312,6 +1442,7 @@
       const model = findEmberSortableModel(container);
       const diagnostic = {
         hasEmber: !!window.Ember, emberVersion: window.Ember && window.Ember.VERSION,
+        hasEmberSet: !!(window.Ember && window.Ember.set),
         foundUnused: !!model?.unusedItems, foundUsed: !!model?.usedItems,
         unusedLen: model?.unusedItems ? (typeof model.unusedItems.get === 'function' ? model.unusedItems.get('length') : model.unusedItems.length) : 0,
         usedLen: model?.usedItems ? (typeof model.usedItems.get === 'function' ? model.usedItems.get('length') : model.usedItems.length) : 0,
@@ -1323,11 +1454,48 @@
           const item = typeof model.usedItems.objectAt === 'function' ? model.usedItems.objectAt(i) : model.usedItems[i];
           if (item) {
             const t = typeof item.get === 'function' ? (item.get('text') || item.get('code') || '') : (item.text || item.code || '');
-            const indent = typeof item.get === 'function' ? item.get('indent') : item.indent;
-            items.push({ text: t.substring(0, 40), indent, keys: Object.keys(item).filter(k => !k.startsWith('_')).slice(0, 10) });
+            const allKeys = Object.keys(item).filter(k => !k.startsWith('_'));
+            // Gather all indent-related property values
+            const indentProps = {};
+            for (const k of allKeys) {
+              if (/indent|margin|level|offset|position/i.test(k)) {
+                try {
+                  indentProps[k] = typeof item.get === 'function' ? item.get(k) : item[k];
+                } catch (e) { indentProps[k] = '(error)'; }
+              }
+            }
+            // Also try common names even if not in Object.keys
+            for (const prop of ['indent', 'indentation', 'indentLevel', 'indentPx']) {
+              if (!(prop in indentProps)) {
+                try {
+                  const val = typeof item.get === 'function' ? item.get(prop) : item[prop];
+                  if (val !== undefined) indentProps[prop] = val;
+                } catch (e) { /* ignore */ }
+              }
+            }
+            items.push({
+              text: t.substring(0, 50),
+              indentProps,
+              allKeys,
+              hasSet: typeof item.set === 'function',
+              hasGet: typeof item.get === 'function',
+              type: typeof item,
+              constructor: item.constructor?.name || 'unknown'
+            });
           }
         }
         diagnostic.usedItems = items;
+      }
+      // Also check DOM block data attributes and marginLeft
+      const usedList = container.querySelector('.sortable[data-list-name="used"]');
+      if (usedList) {
+        diagnostic.domBlocks = Array.from(usedList.querySelectorAll('.block')).map(b => ({
+          text: b.textContent.trim().substring(0, 40),
+          marginLeft: b.style.marginLeft,
+          dataIndent: b.getAttribute('data-indent'),
+          dataBlockId: b.getAttribute('data-block-id'),
+          disabled: b.getAttribute('aria-disabled')
+        }));
       }
       document.dispatchEvent(new CustomEvent('zyagent-ace-response', { detail: { requestId, success: true, ...diagnostic } }));
     } catch (err) {
@@ -1547,6 +1715,371 @@
         detail: { requestId, success: false, error: err.message }
       }));
     });
+  });
+
+  // ══════════════════════════════════════════════════════════
+  //  PARSONS INDENT INTERCEPTION
+  //  The nuclear option: intercept zyBooks' outgoing XHR/fetch requests
+  //  and patch indent values in the submission payload.
+  //
+  //  This bypasses all Ember model / DOM / event issues entirely.
+  //  The agent sets desired indents via 'zyagent-sortable-set-desired-indents',
+  //  then when zyBooks sends the Check request, we fix the indent values.
+  // ══════════════════════════════════════════════════════════
+
+  // Registry of desired indent overrides: { blockText -> indentLevel }
+  // Set by the agent before clicking Check, cleared after interception.
+  window.__zyagentDesiredIndents = null;
+
+  // Log of ALL intercepted requests (for diagnostics)
+  window.__zyagentXHRLog = [];
+
+  // ── SET DESIRED INDENTS: Agent calls this before clicking Check ──
+  document.addEventListener('zyagent-sortable-set-desired-indents', function (e) {
+    const { requestId, indents } = e.detail;
+    // indents = { "block text": indentLevel, ... }
+    window.__zyagentDesiredIndents = indents;
+    // Also clear log so we capture fresh requests
+    window.__zyagentXHRLog = [];
+    console.log('[ZyAgent Bridge] Desired indents ARMED:', JSON.stringify(indents));
+    document.dispatchEvent(new CustomEvent('zyagent-ace-response', {
+      detail: { requestId, success: true }
+    }));
+  });
+
+  // ── GET XHR LOG: Let the content script read what was captured ──
+  document.addEventListener('zyagent-get-xhr-log', function (e) {
+    const { requestId } = e.detail;
+    document.dispatchEvent(new CustomEvent('zyagent-ace-response', {
+      detail: { requestId, success: true, log: window.__zyagentXHRLog.slice(-20) }
+    }));
+  });
+
+  // ── Patch function: fix indent values in a parsed request body ──
+  // Now much more aggressive — handles many possible payload formats
+  function patchParsonsIndents(bodyObj) {
+    const indents = window.__zyagentDesiredIndents;
+    if (!indents || Object.keys(indents).length === 0) return false;
+
+    let patched = false;
+    const indentTexts = Object.keys(indents);
+
+    // Strategy A: Patch any array of objects that has indent-like properties
+    function patchArray(arr) {
+      if (!Array.isArray(arr)) return;
+      for (const item of arr) {
+        if (!item || typeof item !== 'object') continue;
+        // Try ALL possible text property names
+        let text = '';
+        for (const tk of ['text', 'code', 'content', 'codeText', 'blockText', 'label', 'value', 'line', 'source']) {
+          if (item[tk] && typeof item[tk] === 'string') { text = item[tk].trim(); break; }
+        }
+        if (!text) continue;
+
+        // Find matching indent override
+        let desired = indents[text];
+        if (desired === undefined) {
+          // Try partial match (block text might be slightly different in payload)
+          for (const ik of indentTexts) {
+            if (ik.includes(text) || text.includes(ik)) { desired = indents[ik]; break; }
+          }
+        }
+        if (desired === undefined) continue;
+
+        // Patch ALL indent-like properties
+        for (const ik of ['indent', 'indentation', 'indentLevel', 'indent_level', 'indentCount', 'blockIndent', 'level', 'depth']) {
+          if (ik in item) {
+            console.log(`[ZyAgent Bridge] XHR PATCH: "${text.substring(0, 30)}" ${ik}: ${item[ik]} → ${desired}`);
+            item[ik] = desired;
+            patched = true;
+          }
+        }
+      }
+    }
+
+    // Strategy B: Recursively search for ANY array of objects
+    function searchAndPatch(obj, depth, path) {
+      if (!obj || typeof obj !== 'object' || depth > 8) return;
+      if (Array.isArray(obj)) {
+        if (obj.length > 0 && obj[0] && typeof obj[0] === 'object') {
+          patchArray(obj);
+        }
+        for (let i = 0; i < obj.length; i++) {
+          if (obj[i] && typeof obj[i] === 'object') searchAndPatch(obj[i], depth + 1, path + '[' + i + ']');
+        }
+        return;
+      }
+      for (const key of Object.keys(obj)) {
+        try {
+          const val = obj[key];
+          if (val && typeof val === 'object') {
+            searchAndPatch(val, depth + 1, path + '.' + key);
+          }
+        } catch (e) { /* skip */ }
+      }
+    }
+
+    searchAndPatch(bodyObj, 0, 'root');
+    return patched;
+  }
+
+  // ── Helper: try to parse and patch a body string (JSON or URL-encoded) ──
+  function tryPatchBody(bodyStr) {
+    if (!bodyStr || typeof bodyStr !== 'string') return null;
+
+    // Try JSON
+    try {
+      const parsed = JSON.parse(bodyStr);
+      if (patchParsonsIndents(parsed)) {
+        return JSON.stringify(parsed);
+      }
+      return null;
+    } catch (e) { /* not JSON */ }
+
+    // Try URL-encoded form data (might contain JSON in a field)
+    try {
+      if (bodyStr.includes('=') && bodyStr.includes('&')) {
+        const params = new URLSearchParams(bodyStr);
+        let patchedAny = false;
+        for (const [key, value] of params.entries()) {
+          try {
+            const parsed = JSON.parse(value);
+            if (typeof parsed === 'object' && patchParsonsIndents(parsed)) {
+              params.set(key, JSON.stringify(parsed));
+              patchedAny = true;
+            }
+          } catch (e) { /* not JSON value */ }
+        }
+        if (patchedAny) return params.toString();
+      }
+    } catch (e) { /* not form data */ }
+
+    return null;
+  }
+
+  // ── Intercept XMLHttpRequest.prototype.send ──
+  // ALWAYS log, and patch when armed
+  const _origXHROpen = XMLHttpRequest.prototype.open;
+  XMLHttpRequest.prototype.open = function (method, url, ...rest) {
+    this.__zyagentMethod = method;
+    this.__zyagentUrl = url;
+    return _origXHROpen.call(this, method, url, ...rest);
+  };
+
+  const _origXHRSend = XMLHttpRequest.prototype.send;
+  XMLHttpRequest.prototype.send = function (body) {
+    const url = this.__zyagentUrl || '';
+    const method = this.__zyagentMethod || '';
+
+    // Log ALL POST/PUT requests for diagnostics
+    if (body && (method === 'POST' || method === 'PUT')) {
+      const logEntry = {
+        ts: Date.now(),
+        method,
+        url: url.substring(0, 200),
+        bodyType: typeof body,
+        bodyLen: typeof body === 'string' ? body.length : (body ? 'non-string' : 'null'),
+        bodyPreview: typeof body === 'string' ? body.substring(0, 1000) : String(body).substring(0, 200),
+        armed: !!window.__zyagentDesiredIndents
+      };
+      window.__zyagentXHRLog.push(logEntry);
+      console.log('[ZyAgent Bridge] XHR', method, url.substring(0, 100),
+        '| bodyType:', typeof body,
+        '| bodyLen:', typeof body === 'string' ? body.length : 'N/A',
+        '| armed:', !!window.__zyagentDesiredIndents);
+      if (typeof body === 'string') {
+        console.log('[ZyAgent Bridge] XHR body preview:', body.substring(0, 800));
+      }
+    }
+
+    // Try to patch if armed
+    if (window.__zyagentDesiredIndents && body) {
+      if (typeof body === 'string') {
+        const patched = tryPatchBody(body);
+        if (patched) {
+          console.log('[ZyAgent Bridge] ✅ XHR body PATCHED!');
+          console.log('[ZyAgent Bridge] Patched body preview:', patched.substring(0, 800));
+          window.__zyagentDesiredIndents = null;
+          return _origXHRSend.call(this, patched);
+        }
+      }
+      // body might be FormData, Blob, ArrayBuffer, etc.
+      if (body instanceof FormData) {
+        console.log('[ZyAgent Bridge] XHR body is FormData, entries:');
+        for (const [key, val] of body.entries()) {
+          console.log(`  ${key}: ${typeof val === 'string' ? val.substring(0, 200) : '[non-string]'}`);
+          if (typeof val === 'string') {
+            try {
+              const parsed = JSON.parse(val);
+              if (typeof parsed === 'object' && patchParsonsIndents(parsed)) {
+                body.set(key, JSON.stringify(parsed));
+                console.log('[ZyAgent Bridge] ✅ FormData field', key, 'PATCHED!');
+                window.__zyagentDesiredIndents = null;
+              }
+            } catch (e) { /* not JSON */ }
+          }
+        }
+      }
+    }
+
+    return _origXHRSend.call(this, body);
+  };
+
+  // ── Intercept window.fetch ──
+  // ALWAYS log, and patch when armed
+  const _origFetch = window.fetch;
+  window.fetch = function (input, init) {
+    const url = typeof input === 'string' ? input : (input && input.url ? input.url : '');
+    const method = (init && init.method) || 'GET';
+    const body = init && init.body;
+
+    if (body && (method === 'POST' || method === 'PUT')) {
+      const logEntry = {
+        ts: Date.now(),
+        method,
+        url: url.substring(0, 200),
+        bodyType: typeof body,
+        bodyLen: typeof body === 'string' ? body.length : 'non-string',
+        bodyPreview: typeof body === 'string' ? body.substring(0, 1000) : String(body).substring(0, 200),
+        armed: !!window.__zyagentDesiredIndents
+      };
+      window.__zyagentXHRLog.push(logEntry);
+      console.log('[ZyAgent Bridge] fetch', method, url.substring(0, 100),
+        '| bodyType:', typeof body,
+        '| armed:', !!window.__zyagentDesiredIndents);
+      if (typeof body === 'string') {
+        console.log('[ZyAgent Bridge] fetch body preview:', body.substring(0, 800));
+      }
+    }
+
+    if (window.__zyagentDesiredIndents && body && typeof body === 'string') {
+      const patched = tryPatchBody(body);
+      if (patched) {
+        console.log('[ZyAgent Bridge] ✅ fetch body PATCHED!');
+        window.__zyagentDesiredIndents = null;
+        return _origFetch.call(this, input, { ...init, body: patched });
+      }
+    }
+    return _origFetch.call(this, input, init);
+  };
+
+  // ── SORTABLE-FORCE-EMBER-INDENT: Aggressively find and set Ember indent ──
+  // This uses every possible method to force the indent value into the Ember model.
+  // Called right before Check as a last-resort Ember sync.
+  document.addEventListener('zyagent-sortable-force-ember-indent', function (e) {
+    const { requestId, containerSelector, indents } = e.detail;
+    // indents = { "block text": desiredIndent, ... }
+
+    try {
+      const container = document.querySelector(containerSelector) || document;
+      const usedList = container.querySelector('.sortable[data-list-name="used"]');
+      if (!usedList) throw new Error('Cannot find used list');
+
+      const results = {};
+
+      // Method 1: Walk ALL ember refs on ALL elements in the used list to find the block model
+      const blocks = Array.from(usedList.querySelectorAll('.block'));
+      for (const block of blocks) {
+        const text = block.textContent.trim();
+        if (!(text in indents)) continue;
+        const desired = indents[text];
+
+        let found = false;
+
+        // Check the block element itself and its parents for ember view refs
+        const targets = [block, block.parentElement, usedList];
+        for (const tgt of targets) {
+          if (!tgt) continue;
+          try {
+            for (const key of Object.keys(tgt)) {
+              if (!key.startsWith('__ember') && !key.startsWith('__EMBER')) continue;
+              const viewRef = tgt[key];
+              if (!viewRef) continue;
+
+              // The view ref may have a component with the block item
+              // Or the block's view ref may directly have the item data
+              const checkAndSet = (obj) => {
+                if (!obj || typeof obj !== 'object') return false;
+                // Check if this object IS the block item (has indent + text)
+                const objText = typeof obj.get === 'function'
+                  ? (obj.get('text') || obj.get('code') || '')
+                  : (obj.text || obj.code || '');
+                if (objText.trim() === text || objText === text) {
+                  // This IS the item — set indent
+                  if (window.Ember && window.Ember.set) {
+                    try { window.Ember.set(obj, 'indent', desired); } catch (e) { /* ignore */ }
+                    try { window.Ember.set(obj, 'indentation', desired); } catch (e) { /* ignore */ }
+                  }
+                  if (typeof obj.set === 'function') {
+                    try { obj.set('indent', desired); } catch (e) { /* ignore */ }
+                  }
+                  // Also plain set
+                  try { if ('indent' in obj) obj.indent = desired; } catch (e) { /* ignore */ }
+                  try { if ('indentation' in obj) obj.indentation = desired; } catch (e) { /* ignore */ }
+                  return true;
+                }
+                return false;
+              };
+
+              if (checkAndSet(viewRef)) { found = true; break; }
+              if (viewRef.args && checkAndSet(viewRef.args)) { found = true; break; }
+              if (viewRef.component && checkAndSet(viewRef.component)) { found = true; break; }
+
+              // Check if viewRef has an 'item' or 'model' property
+              for (const prop of ['item', 'model', 'block', 'data', 'content']) {
+                try {
+                  const val = viewRef[prop] || (viewRef.args && viewRef.args[prop]);
+                  if (checkAndSet(val)) { found = true; break; }
+                } catch (e) { /* skip */ }
+              }
+              if (found) break;
+            }
+          } catch (e) { /* skip */ }
+          if (found) break;
+        }
+
+        // Method 2: Use the findEmberSortableModel approach
+        if (!found) {
+          try {
+            const model = findEmberSortableModel(container);
+            if (model && model.usedItems) {
+              const arr = model.usedItems;
+              const len = typeof arr.get === 'function' ? arr.get('length') : arr.length;
+              for (let i = 0; i < len; i++) {
+                const item = typeof arr.objectAt === 'function' ? arr.objectAt(i) : arr[i];
+                if (!item) continue;
+                const t = typeof item.get === 'function'
+                  ? (item.get('text') || item.get('code') || '')
+                  : (item.text || item.code || '');
+                if (t.trim() === text || t === text) {
+                  if (window.Ember && window.Ember.set) {
+                    try { window.Ember.set(item, 'indent', desired); found = true; } catch (e) { /* ignore */ }
+                  }
+                  if (typeof item.set === 'function') {
+                    try { item.set('indent', desired); found = true; } catch (e) { /* ignore */ }
+                  }
+                  if ('indent' in item) { item.indent = desired; found = true; }
+                  if ('indentation' in item) { item.indentation = desired; found = true; }
+                  break;
+                }
+              }
+            }
+          } catch (e) { /* ignore */ }
+        }
+
+        results[text.substring(0, 30)] = found ? 'set' : 'not-found';
+      }
+
+      console.log('[ZyAgent Bridge] force-ember-indent results:', JSON.stringify(results));
+      document.dispatchEvent(new CustomEvent('zyagent-ace-response', {
+        detail: { requestId, success: true, results }
+      }));
+    } catch (err) {
+      console.error('[ZyAgent Bridge] force-ember-indent error:', err);
+      document.dispatchEvent(new CustomEvent('zyagent-ace-response', {
+        detail: { requestId, success: false, error: err.message }
+      }));
+    }
   });
 
   // ── Signal that the bridge is ready ──

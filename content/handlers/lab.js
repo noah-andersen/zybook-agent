@@ -507,39 +507,258 @@
   /**
    * Read the current score from the parent page.
    * Returns { current, total } or null.
+   * 
+   * Searches multiple locations:
+   *   1. .lab-score element
+   *   2. Previous submissions section (most recent submission score)
+   *   3. Coding trail (aria-description with score)
+   *   4. Any "X / Y" text in the results area
    */
   function readScore(el) {
+    // Strategy 1: Direct lab-score element
     const scoreEl = el.querySelector('.lab-score');
-    if (!scoreEl) return null;
-    const text = scoreEl.innerText.trim(); // e.g., "0 / 10"
-    const match = text.match(/(\d+)\s*\/\s*(\d+)/);
-    if (match) return { current: parseInt(match[1]), total: parseInt(match[2]) };
+    if (scoreEl) {
+      const match = scoreEl.innerText.trim().match(/(\d+)\s*\/\s*(\d+)/);
+      if (match) return { current: parseInt(match[1]), total: parseInt(match[2]) };
+    }
+
+    // Strategy 2: Latest submission in "Previous submissions" section
+    const viewSubmissions = el.querySelector('.zb-card.view-submissions, .view-submissions');
+    if (viewSubmissions) {
+      // Find the first (most recent) submission row with a score
+      const rows = viewSubmissions.querySelectorAll('.flex.h-9, .submission-row');
+      for (const row of rows) {
+        const text = row.innerText.trim();
+        const match = text.match(/(\d+)\s*\/\s*(\d+)/);
+        if (match) return { current: parseInt(match[1]), total: parseInt(match[2]) };
+      }
+      // Fallback: any score pattern in the submissions card
+      const fullText = viewSubmissions.innerText;
+      const match = fullText.match(/(\d+)\s*\/\s*(\d+)/);
+      if (match) return { current: parseInt(match[1]), total: parseInt(match[2]) };
+    }
+
+    // Strategy 3: Coding trail — check the latest button's aria-description
+    const trailButtons = el.querySelectorAll('.zylab-signature button[aria-description]');
+    if (trailButtons.length > 0) {
+      const lastTrail = trailButtons[trailButtons.length - 1];
+      const desc = lastTrail.getAttribute('aria-description') || '';
+      // e.g., "View submission at 04/05/26 7:34 PM with score of ,7"
+      const scoreMatch = desc.match(/score\s+of\s+,?(\d+)/i);
+      if (scoreMatch) {
+        // We have the current score but need total; look for it elsewhere
+        const current = parseInt(scoreMatch[1]);
+        // Try to find total from the submissions section
+        const totalMatch = el.innerText.match(/(\d+)\s*\/\s*(\d+)/);
+        const total = totalMatch ? parseInt(totalMatch[2]) : 10;
+        return { current, total };
+      }
+    }
+
+    // Strategy 4: Broad search in the test results area
+    const testArea = el.querySelector('.zb-card.test-results, .test-results');
+    if (testArea) {
+      const match = testArea.innerText.match(/(\d+)\s*\/\s*(\d+)/);
+      if (match) return { current: parseInt(match[1]), total: parseInt(match[2]) };
+    }
+
     return null;
   }
 
   /**
    * Read test results from the parent page after submission.
+   * 
+   * This function uses multiple strategies:
+   *   1. Read the test-results card directly (if results have rendered)
+   *   2. Click the latest "View" button in Previous submissions to expand details
+   *   3. Parse individual test case pass/fail, input, expected output, actual output
+   *   4. Fallback: screenshot analysis if nothing else works
    */
-  function readTestResults(el) {
+  async function readTestResults(el) {
     const parts = [];
 
-    // Test results container
-    const testResults = el.querySelectorAll('.test-results .test-result, .test-results tr, .zb-card.test-results');
-    if (testResults.length === 0) {
-      // Check for "Latest submission" text
-      const latestSubmission = el.querySelector('.test-results');
-      if (latestSubmission) {
-        parts.push(latestSubmission.innerText.trim());
+    // ── Strategy 1: Direct test-results card ──
+    const testResultsCard = el.querySelector('.zb-card.test-results');
+    if (testResultsCard) {
+      const cardText = testResultsCard.innerText.trim();
+      // Skip placeholders
+      if (cardText &&
+          !cardText.includes('will appear here') &&
+          !cardText.includes('No submissions yet') &&
+          !cardText.includes('Autograded test cases are running')) {
+        parts.push('=== TEST RESULTS ===');
+        parts.push(cardText);
       }
-      return parts.join('\n');
     }
 
-    for (const result of testResults) {
-      const text = result.innerText.trim();
-      if (text) parts.push(text);
+    // ── Strategy 2: Expand the latest submission "View" button ──
+    // The real test details are hidden behind "View" buttons in the
+    // "Previous submissions" section. Click the FIRST (most recent) one.
+    const viewSubmissionsCard = el.querySelector('.zb-card.view-submissions, .view-submissions');
+    if (viewSubmissionsCard) {
+      // Find all View buttons
+      const viewButtons = viewSubmissionsCard.querySelectorAll('button.zb-button');
+      let latestViewBtn = null;
+      for (const btn of viewButtons) {
+        const text = (btn.innerText || btn.textContent || '').trim().toLowerCase();
+        if (text.includes('view')) {
+          latestViewBtn = btn;
+          break; // First one = most recent submission
+        }
+      }
+
+      if (latestViewBtn) {
+        console.log('[ZyAgent Lab] Clicking latest View button to expand test details');
+        latestViewBtn.click();
+        await Z.sleep(2000);
+
+        // After clicking View, test details should appear.
+        // Look for expanded test case rows, result tables, etc.
+        const expandedContent = _scrapeExpandedTestDetails(el);
+        if (expandedContent) {
+          parts.push('=== EXPANDED TEST DETAILS ===');
+          parts.push(expandedContent);
+        }
+      }
     }
 
-    return parts.join('\n').substring(0, 3000);
+    // ── Strategy 3: Parse any visible test case elements in the page ──
+    const testCaseDetails = _scrapeTestCaseElements(el);
+    if (testCaseDetails) {
+      parts.push(testCaseDetails);
+    }
+
+    // ── Strategy 4: Check for a score summary from the submission ──
+    const score = readScore(el);
+    if (score) {
+      parts.push(`\nCurrent score: ${score.current} / ${score.total}`);
+      if (score.current < score.total) {
+        parts.push(`FAILED ${score.total - score.current} out of ${score.total} test cases.`);
+      }
+    }
+
+    const result = parts.join('\n').substring(0, 5000);
+    return result || 'No specific test feedback found.';
+  }
+
+  /**
+   * Scrape expanded test case details after clicking a "View" button.
+   * Looks for test result tables, pass/fail indicators, and expected vs actual output.
+   */
+  function _scrapeExpandedTestDetails(el) {
+    const details = [];
+
+    // Look for test case containers — zyLabs typically shows a table or list
+    // with columns: Test case, Status (pass/fail), Input, Expected output, Your output
+    const testCaseSelectors = [
+      '.test-case-result', '.test-case', '.submission-test-result',
+      '.test-result-row', '.test-result',
+      'table.test-results tr', 'table tr',
+      '.submission-detail .test', '.autograded-results .result',
+    ];
+
+    for (const sel of testCaseSelectors) {
+      const rows = el.querySelectorAll(sel);
+      if (rows.length > 0) {
+        for (const row of rows) {
+          const text = row.innerText.trim();
+          if (text && text.length > 5) {
+            details.push(text);
+          }
+        }
+        if (details.length > 0) break;
+      }
+    }
+
+    // Look for a detailed results table with header + data rows
+    const tables = el.querySelectorAll('.zb-card table, .test-results table, .submission-details table');
+    for (const table of tables) {
+      const tableText = table.innerText.trim();
+      if (tableText && tableText.length > 10) {
+        details.push('Test Results Table:\n' + tableText);
+      }
+    }
+
+    // Look for individual test pass/fail badges / icons
+    const passFailElements = el.querySelectorAll(
+      '[class*="pass"], [class*="fail"], [class*="correct"], [class*="incorrect"], ' +
+      '.test-status, .result-status, [aria-label*="pass"], [aria-label*="fail"]'
+    );
+    if (passFailElements.length > 0) {
+      const statusInfo = [];
+      for (const pfEl of passFailElements) {
+        const text = pfEl.innerText.trim();
+        const classes = pfEl.className || '';
+        const ariaLabel = pfEl.getAttribute('aria-label') || '';
+        const parentText = pfEl.closest('tr, .test-case, .test-result, .flex')?.innerText?.trim() || '';
+        
+        let status = 'unknown';
+        if (classes.includes('pass') || classes.includes('correct') || ariaLabel.includes('pass')) status = 'PASS';
+        if (classes.includes('fail') || classes.includes('incorrect') || ariaLabel.includes('fail')) status = 'FAIL';
+        
+        statusInfo.push(`  ${status}: ${parentText || text}`);
+      }
+      if (statusInfo.length > 0) {
+        details.push('Test case statuses:\n' + statusInfo.join('\n'));
+      }
+    }
+
+    // Look for expected/actual output comparison
+    const comparisonSelectors = [
+      '.expected-output', '.actual-output', '.your-output', '.test-output',
+      '[class*="expected"]', '[class*="actual"]', '[class*="your-output"]',
+      '.programming-code-output', '.output-comparison',
+    ];
+    for (const sel of comparisonSelectors) {
+      const outputs = el.querySelectorAll(sel);
+      for (const output of outputs) {
+        const text = output.innerText.trim();
+        if (text) {
+          const label = output.className || sel;
+          details.push(`${label}: ${text}`);
+        }
+      }
+    }
+
+    return details.length > 0 ? details.join('\n\n') : null;
+  }
+
+  /**
+   * Scrape any visible test case elements from the page.
+   * This catches test results that may be rendered inline or in cards.
+   */
+  function _scrapeTestCaseElements(el) {
+    const details = [];
+
+    // Look for zy-specific test result containers
+    // After "Submit for grading", zyLabs may render test results in various formats
+    const cardContents = el.querySelectorAll('.zb-card-content');
+    for (const card of cardContents) {
+      // Skip cards with only placeholder text
+      const text = card.innerText.trim();
+      if (!text || text.includes('will appear here') || text.includes('No submissions')) continue;
+      
+      // Look for test case data within this card
+      const testItems = card.querySelectorAll('.test-case, .test-result, tr, .flex.items-center');
+      for (const item of testItems) {
+        const itemText = item.innerText.trim();
+        if (itemText && itemText.length > 5 && !details.includes(itemText)) {
+          details.push(itemText);
+        }
+      }
+    }
+
+    // Look for any error messages that zyLabs might show inline
+    const errorMessages = el.querySelectorAll(
+      '.compilation-error, .runtime-error, [class*="error-message"], ' +
+      '.error-output, [class*="stderr"]'
+    );
+    for (const errEl of errorMessages) {
+      const text = errEl.innerText.trim();
+      if (text) details.push('Error: ' + text);
+    }
+
+    return details.length > 0 ? details.join('\n') : null;
   }
 
   /**
@@ -568,31 +787,66 @@
 
   /**
    * Wait for submission to complete (test results to appear).
+   * 
+   * Watches for several signals:
+   *   1. The "Autograded test cases are running" text to disappear
+   *   2. The Submit button to become enabled again (not disabled)
+   *   3. Test result content to appear in the results card
+   *   4. A new entry to appear in the "Previous submissions" section
+   *   5. The progress spinner to disappear
    */
-  async function waitForSubmissionResults(el, timeoutMs = 60000) {
+  async function waitForSubmissionResults(el, timeoutMs = 90000) {
     const start = Date.now();
+
+    // Count current submissions so we can detect when a new one appears
+    const prevSubmissionCount = el.querySelectorAll('.view-submissions .flex.h-9, .view-submissions .submission-row').length;
+
     while (Date.now() - start < timeoutMs) {
-      // Check for test result content (not just "No submissions yet")
+      // Signal 1: Check if "Autograded test cases are running" is gone
+      const runningText = el.querySelector('.italic');
+      const isStillRunning = runningText &&
+        runningText.innerText.includes('Autograded test cases are running');
+
+      // Signal 2: Submit button became enabled again
+      const submitBtn = Array.from(el.querySelectorAll('button.zb-button')).find(btn => {
+        const text = (btn.innerText || '').toLowerCase().trim();
+        return text.includes('submit') && text.includes('grading');
+      });
+      const submitEnabled = submitBtn && !submitBtn.disabled;
+
+      // Signal 3: Test results card has real content
       const testResultsCard = el.querySelector('.zb-card.test-results');
-      if (testResultsCard) {
-        const text = testResultsCard.innerText.trim();
-        // Check if results have loaded (not the "No submissions yet" placeholder)
-        if (text && !text.includes('No submissions yet') && text.includes('/')) {
-          // Wait a bit more for the full results to render
-          await Z.sleep(1000);
-          return true;
-        }
+      const hasRealResults = testResultsCard &&
+        !testResultsCard.innerText.includes('will appear here') &&
+        !testResultsCard.innerText.includes('No submissions yet') &&
+        !testResultsCard.innerText.includes('Autograded test cases are running') &&
+        testResultsCard.innerText.trim().length > 20;
+
+      // Signal 4: New submission appeared in "Previous submissions"
+      const currentSubmissionCount = el.querySelectorAll('.view-submissions .flex.h-9, .view-submissions .submission-row').length;
+      const newSubmissionAppeared = currentSubmissionCount > prevSubmissionCount;
+
+      // Signal 5: Progress spinner is gone
+      const spinner = el.querySelector('.zb-progress-circular');
+      const spinnerGone = !spinner || spinner.offsetParent === null;
+
+      // We consider results ready if:
+      //  - The running text is gone AND (submit is re-enabled OR new submission appeared)
+      //  - OR real test results have appeared
+      if (hasRealResults) {
+        await Z.sleep(1000); // Extra settle time
+        return true;
       }
 
-      // Check if submission spinner is gone
-      const spinner = el.querySelector('.submission-spinner, .loading');
-      if (!spinner || spinner.offsetParent === null) {
-        // Give it a moment after spinner disappears
-        await Z.sleep(500);
-        const card = el.querySelector('.zb-card.test-results');
-        if (card && !card.innerText.includes('No submissions yet')) {
-          return true;
-        }
+      if (!isStillRunning && (submitEnabled || newSubmissionAppeared)) {
+        await Z.sleep(2000); // Give results a moment to render
+        return true;
+      }
+
+      // Special case: if spinner is gone and not still running, we're likely done
+      if (spinnerGone && !isStillRunning && (Date.now() - start > 10000)) {
+        await Z.sleep(1500);
+        return true;
       }
 
       await Z.sleep(1000);
@@ -680,11 +934,36 @@
 
     console.log('[ZyAgent Lab] Existing code:', existingCode.substring(0, 300));
 
-    const maxRetries = 4;
+    const maxRetries = 5;
     let lastCode = '';
     let lastTestResults = '';
     let lastActualOutput = '';
     let lastError = '';
+    let attemptHistory = []; // Track all attempts for better AI context
+
+    // ── Pre-flight: Check if there are prior submissions with test feedback ──
+    // If the user already has a partial score (e.g., 7/10), read those results
+    // BEFORE the first attempt so the AI can learn from them.
+    const priorScore = readScore(el);
+    if (priorScore && priorScore.current > 0 && priorScore.current < priorScore.total) {
+      console.log(`[ZyAgent Lab] Prior score found: ${priorScore.current}/${priorScore.total} — reading previous test results`);
+      Z.sendProgress(priorScore.current, priorScore.total, 'Reading previous submission feedback…');
+      
+      lastTestResults = await readTestResults(el);
+      console.log('[ZyAgent Lab] Prior test results:', lastTestResults.substring(0, 500));
+      
+      // Also read the current code (which is what got the previous score)
+      if (existingCode) {
+        lastCode = existingCode;
+      }
+      
+      // Record as a "prior" attempt
+      attemptHistory.push({
+        attempt: 0,
+        score: `${priorScore.current}/${priorScore.total}`,
+        keyIssue: `Prior submission: ${priorScore.current}/${priorScore.total} tests passed`
+      });
+    }
 
     for (let attempt = 0; attempt < maxRetries; attempt++) {
       if (Z.shouldStop) return;
@@ -703,6 +982,47 @@
       );
 
       // Build prompt for AI
+      let retryContext = '';
+      const hasPriorFeedback = !isRetry && lastTestResults && lastTestResults !== 'No specific test feedback found.';
+      if (hasPriorFeedback) {
+        // First attempt, but there's feedback from a PRIOR session's submissions
+        retryContext = '\n\n═══ PRIOR SUBMISSION FEEDBACK ═══\n';
+        retryContext += `A previous submission scored ${currentScore ? currentScore.current + '/' + currentScore.total : 'unknown'}.\n`;
+        retryContext += `\nDETAILED TEST FEEDBACK FROM PRIOR ATTEMPT:\n${lastTestResults}\n`;
+        retryContext += '\n═══ END FEEDBACK ═══\n';
+        retryContext += '\nUse this feedback to write a CORRECT solution the first time.\n';
+        retryContext += '- Fix all failing test cases identified above\n';
+        retryContext += '- Pay close attention to expected vs actual output differences\n';
+      } else if (isRetry) {
+        retryContext = '\n\n═══ PREVIOUS ATTEMPT FAILED ═══\n';
+        retryContext += `Your previous code scored ${currentScore ? currentScore.current + '/' + currentScore.total : 'unknown'}.\n`;
+        if (lastTestResults && lastTestResults !== 'No specific test feedback found.') {
+          retryContext += `\nDETAILED TEST FEEDBACK:\n${lastTestResults}\n`;
+        }
+        if (lastActualOutput) {
+          retryContext += `\nYOUR CODE'S OUTPUT:\n${lastActualOutput}\n`;
+        }
+        if (lastError) {
+          retryContext += `\nERROR MESSAGE:\n${lastError}\n`;
+        }
+        retryContext += '\n═══ END FEEDBACK ═══\n';
+        retryContext += '\nCarefully analyze the test feedback above. Pay attention to:\n';
+        retryContext += '- Which test cases PASSED and which FAILED\n';
+        retryContext += '- The difference between expected output and your output\n';
+        retryContext += '- Edge cases you may have missed\n';
+        retryContext += '- Input values that your code handled incorrectly\n';
+
+        // Include attempt history for persistent failures
+        if (attemptHistory.length > 1) {
+          retryContext += '\n\nATTEMPT HISTORY:\n';
+          for (const hist of attemptHistory) {
+            retryContext += `  Attempt ${hist.attempt}: Score ${hist.score || 'unknown'}\n`;
+            if (hist.keyIssue) retryContext += `    Issue: ${hist.keyIssue}\n`;
+          }
+          retryContext += '\nYou have tried ' + attemptHistory.length + ' times. Do NOT repeat the same approach. Try a fundamentally different solution.\n';
+        }
+      }
+
       const messages = [
         {
           role: 'system',
@@ -712,17 +1032,16 @@ The code must be complete and runnable.
 If there is existing code with a template/scaffold, complete it while preserving any required structure.
 Match any expected output EXACTLY including whitespace, newlines, and capitalization.
 ${Z.ZYBOOKS_OUTPUT_RULES}
-${isRetry ? '\nYour previous attempt failed some test cases. Fix your code based on the feedback below.' : ''}`
+${isRetry ? '\nIMPORTANT: Your previous attempt failed some test cases. You MUST carefully study the test feedback below and fix ALL failing test cases.' : ''}${hasPriorFeedback ? '\nIMPORTANT: There is feedback from a prior submission. Study it carefully and write a correct solution that addresses all failing test cases.' : ''}`
         },
         {
           role: 'user',
           content: [
             `Lab instructions:\n${instructions}`,
             existingCode ? `\nExisting code template:\n${existingCode}` : '',
-            isRetry && lastCode ? `\nYour previous code:\n${lastCode}` : '',
-            isRetry && lastTestResults ? `\nTest results from previous attempt:\n${lastTestResults}` : '',
-            isRetry && lastActualOutput ? `\nOutput from previous attempt:\n${lastActualOutput}` : '',
-            isRetry && lastError ? `\nError from previous attempt:\n${lastError}` : '',
+            isRetry && lastCode ? `\nYour previous code (NEEDS FIXING):\n${lastCode}` : '',
+            hasPriorFeedback && lastCode ? `\nPrior submission code (scored ${currentScore ? currentScore.current + '/' + currentScore.total : 'partial'}, NEEDS FIXING):\n${lastCode}` : '',
+            retryContext,
             '\nWrite the complete Python code solution.'
           ].filter(Boolean).join('\n')
         }
@@ -907,12 +1226,12 @@ ${isRetry ? '\nYour previous attempt failed some test cases. Fix your code based
         'Lab: Waiting for test results…'
       );
 
-      const gotResults = await waitForSubmissionResults(el, 60000);
+      const gotResults = await waitForSubmissionResults(el, 90000);
       await Z.sleep(2000);
 
-      // Read test results
-      lastTestResults = readTestResults(el);
-      console.log('[ZyAgent Lab] Test results:', lastTestResults.substring(0, 500));
+      // Read test results — this now expands the "View" button and scrapes details
+      lastTestResults = await readTestResults(el);
+      console.log('[ZyAgent Lab] Test results:', lastTestResults.substring(0, 1000));
 
       // Check score after submission
       const newScore = readScore(el);
@@ -935,13 +1254,44 @@ ${isRetry ? '\nYour previous attempt failed some test cases. Fix your code based
         return;
       }
 
+      // Track attempt history
+      const histEntry = {
+        attempt: attempt + 1,
+        score: newScore ? `${newScore.current}/${newScore.total}` : 'unknown',
+        keyIssue: ''
+      };
+      if (lastError) histEntry.keyIssue = lastError.substring(0, 200);
+      else if (lastTestResults.includes('FAIL')) histEntry.keyIssue = 'Test cases failed';
+      else if (newScore && newScore.current < newScore.total) histEntry.keyIssue = `Only ${newScore.current}/${newScore.total} tests passed`;
+      attemptHistory.push(histEntry);
+
+      // If test results are still weak, try screenshot analysis for visual feedback
+      if (attempt < maxRetries - 1 && (!lastTestResults || lastTestResults === 'No specific test feedback found.')) {
+        try {
+          const visualAnalysis = await Z.analyzeScreenshot(settings,
+            'You are analyzing a zyBooks lab submission result. Look at the screenshot and describe: ' +
+            '1) What is the current score? 2) Which test cases passed and which failed? ' +
+            '3) What are the expected vs actual outputs shown? 4) Any error messages visible?',
+            'Analyze this lab result screenshot. What went wrong with the submission?'
+          );
+          if (visualAnalysis) {
+            lastTestResults = (lastTestResults || '') + '\n\nVISUAL ANALYSIS:\n' + visualAnalysis;
+            console.log('[ZyAgent Lab] Visual analysis:', visualAnalysis.substring(0, 500));
+          }
+        } catch (err) {
+          console.log('[ZyAgent Lab] Screenshot analysis skipped:', err.message);
+        }
+      }
+
       if (attempt < maxRetries - 1) {
         Z.sendProgress(
           newScore?.current || 0,
           totalPoints,
-          `Lab: ${newScore ? newScore.current + '/' + newScore.total : 'Not all tests passed'}. Retrying…`,
+          `Lab: ${newScore ? newScore.current + '/' + newScore.total : 'Not all tests passed'}. Retrying with feedback…`,
           'warn'
         );
+        // Small pause before retry to let the page settle
+        await Z.sleep(1000);
       }
     }
 

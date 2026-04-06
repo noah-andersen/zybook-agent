@@ -53,8 +53,12 @@
               const first = isEmberArr ? val.objectAt(0) : val[0];
               if (first && typeof first === 'object') {
                 const fk = Object.keys(first);
-                if (fk.some(k => /^(blockId|block_id|id|text|code|content|indent|indentation)$/.test(k))) {
-                  found.push({ path: path + '.' + key, array: val, length: len, sampleKeys: fk.slice(0, 15), isEmberArray: typeof val.pushObject === 'function' });
+                // Broadened detection: accept arrays with items that have text/code/indent-like properties
+                // or have more than 2 keys (likely data objects, not DOM/utility objects)
+                const hasBlockProps = fk.some(k => /^(blockId|block_id|id|text|code|content|indent|indentation|codeText|blockText|blockIndent)$/i.test(k));
+                const hasEnoughProps = fk.length >= 2 && fk.length <= 30 && !fk.includes('tagName') && !fk.includes('nodeName');
+                if (hasBlockProps || (hasEnoughProps && len <= 20)) {
+                  found.push({ path: path + '.' + key, array: val, length: len, sampleKeys: fk.slice(0, 20), isEmberArray: typeof val.pushObject === 'function' });
                 }
               }
             }
@@ -72,10 +76,50 @@
     const twoLists = containerEl.querySelector('.two-reorderable-lists') || containerEl;
     elements.push(twoLists);
     for (const sl of containerEl.querySelectorAll('.sortable')) elements.push(sl);
+    // Also include all children of .two-reorderable-lists that might be components
+    for (const child of twoLists.querySelectorAll('*')) {
+      if (child.id || child.className) elements.push(child);
+    }
     let p = twoLists.parentElement;
     for (let i = 0; i < 8 && p; i++) { elements.push(p); p = p.parentElement; }
     const cr = containerEl.closest('[content_resource_id]');
     if (cr) { elements.push(cr); for (const c of cr.children) elements.push(c); }
+
+    // Also try to find the component via Ember's view registry
+    try {
+      if (window.Ember) {
+        // Try Ember.ViewUtils.getViewBounds or Ember.getOwner
+        const viewRegistry = window.Ember.__container__?.lookup('-view-registry:main') ||
+                            window.Ember.ViewUtils;
+        if (viewRegistry) {
+          console.log('[ZyAgent Bridge] Found Ember view registry');
+        }
+        // Try to get component from a .sortable element's Ember view
+        for (const sortableEl of containerEl.querySelectorAll('.sortable, .two-reorderable-lists')) {
+          for (const key of Object.keys(sortableEl).filter(k => k.startsWith('__ember'))) {
+            const ref = sortableEl[key];
+            if (ref && ref.component) {
+              const comp = ref.component;
+              // Look for block list properties on the component
+              for (const ck of Object.keys(comp)) {
+                try {
+                  const val = comp[ck];
+                  if (Array.isArray(val) || (val && typeof val === 'object' && typeof val.objectAt === 'function')) {
+                    const len = typeof val.get === 'function' ? val.get('length') : val.length;
+                    if (len > 0) {
+                      const first = typeof val.objectAt === 'function' ? val.objectAt(0) : val[0];
+                      if (first && typeof first === 'object') {
+                        console.log('[ZyAgent Bridge] Component prop', ck, 'has array len=', len, 'firstKeys=', Object.keys(first).slice(0, 10));
+                      }
+                    }
+                  }
+                } catch (e) { /* skip */ }
+              }
+            }
+          }
+        }
+      }
+    } catch (e) { console.log('[ZyAgent Bridge] Ember view registry search error:', e.message); }
 
     const allArrays = [];
     const visited = new WeakSet();
@@ -104,11 +148,18 @@
       for (let i = 0; i < len; i++) {
         const item = a.isEmberArray ? a.array.objectAt(i) : a.array[i];
         if (item) {
-          const t = typeof item.get === 'function' ? (item.get('text') || item.get('code') || item.get('content') || '') : (item.text || item.code || item.content || '');
+          // Try many possible text property names
+          let t = '';
+          if (typeof item === 'string') { t = item; }
+          else if (typeof item.get === 'function') {
+            t = item.get('text') || item.get('code') || item.get('content') || item.get('codeText') || item.get('blockText') || item.get('label') || '';
+          } else {
+            t = item.text || item.code || item.content || item.codeText || item.blockText || item.label || '';
+          }
           items.push(t);
         }
       }
-      console.log('[ZyAgent Bridge]   Array', a.path, '| len=', len, '| ember=', a.isEmberArray, '| texts=', items.map(t => t.substring(0, 25)).join(', '));
+      console.log('[ZyAgent Bridge]   Array', a.path, '| len=', len, '| ember=', a.isEmberArray, '| sampleKeys=', a.sampleKeys, '| texts=', items.map(t => t.substring(0, 25)).join(', '));
 
       const score = (arrT, domT) => {
         if (!arrT.length || !domT.length) return 0;
@@ -205,11 +256,19 @@
           else if (typeof unusedArr.removeAt === 'function') unusedArr.removeAt(itemIndex);
           else unusedArr.splice(itemIndex, 1);
 
-          // Set indent
+          // Set indent before inserting into used list
           if (indentLevel > 0) {
             try {
-              if (typeof itemToMove.set === 'function') itemToMove.set('indent', indentLevel);
-              else if ('indent' in itemToMove) itemToMove.indent = indentLevel;
+              const setVal = (prop, val) => {
+                try {
+                  if (typeof itemToMove.set === 'function') itemToMove.set(prop, val);
+                  else if (prop in itemToMove) itemToMove[prop] = val;
+                } catch (e) { /* ignore */ }
+              };
+              setVal('indent', indentLevel);
+              setVal('indentation', indentLevel);
+              setVal('indentLevel', indentLevel);
+              console.log('[ZyAgent Bridge] Set indent =', indentLevel, 'on item before insertion, keys:', Object.keys(itemToMove).filter(k => !k.startsWith('_')).slice(0, 15));
             } catch (e) { /* ignore */ }
           }
 
@@ -388,7 +447,9 @@
 
       console.log('[ZyAgent Bridge] adjust-indent:', blockText?.substring(0, 30), 'from', Math.round(currentMargin / INDENT_PX), 'to', desiredIndent);
 
-      // Strategy 1: Ember model indent update
+      // Strategy 1: Find the Ember/Glimmer component and update indent via its model
+      // zyBooks' Parsons blocks are Ember objects. We need to find the actual data object
+      // in the component's block array and update its indent property using Ember's set().
       const tryEmberIndent = async () => {
         try {
           const model = findEmberSortableModel(container);
@@ -399,16 +460,46 @@
             const item = typeof usedArr.objectAt === 'function' ? usedArr.objectAt(i) : usedArr[i];
             if (!item) continue;
             const t = typeof item.get === 'function' ? (item.get('text') || item.get('code') || '') : (item.text || item.code || '');
-            if (blockText && t === blockText) {
-              console.log('[ZyAgent Bridge] Found Ember item for indent update');
-              if (typeof item.set === 'function') { item.set('indent', desiredIndent); item.set('indentation', desiredIndent); }
-              else { if ('indent' in item) item.indent = desiredIndent; if ('indentation' in item) item.indentation = desiredIndent; }
+            if (blockText && (t === blockText || t.trim() === blockText.trim())) {
+              const itemKeys = Object.keys(item).filter(k => !k.startsWith('_'));
+              console.log('[ZyAgent Bridge] Found Ember item for indent update, keys:', itemKeys.slice(0, 25));
+
+              // Log current indent value for debugging
+              const currentEmberIndent = typeof item.get === 'function' ? item.get('indent') : item.indent;
+              console.log('[ZyAgent Bridge] Current Ember indent value:', currentEmberIndent, 'desired:', desiredIndent);
+
+              // Use Ember.set for proper observer notification
+              if (window.Ember && window.Ember.set) {
+                try { window.Ember.set(item, 'indent', desiredIndent); } catch (e) { console.log('[ZyAgent Bridge] Ember.set indent failed:', e.message); }
+                try { window.Ember.set(item, 'indentation', desiredIndent); } catch (e) { /* ignore */ }
+              } else if (typeof item.set === 'function') {
+                item.set('indent', desiredIndent);
+                try { item.set('indentation', desiredIndent); } catch (e) { /* ignore */ }
+              } else {
+                // Plain object fallback
+                for (const prop of itemKeys) {
+                  if (/^indent(ation|Level)?$/.test(prop)) {
+                    item[prop] = desiredIndent;
+                  }
+                }
+              }
+
+              // Also update the DOM marginLeft
+              block.style.marginLeft = (desiredIndent * INDENT_PX) + 'px';
+
+              // Trigger Ember change notifications
               if (window.Ember && window.Ember.run) {
                 window.Ember.run(() => {
                   try { if (typeof usedArr.arrayContentDidChange === 'function') usedArr.arrayContentDidChange(i, 1, 1); } catch (e) { /* ignore */ }
+                  try { if (typeof usedArr.notifyPropertyChange === 'function') usedArr.notifyPropertyChange('[]'); } catch (e) { /* ignore */ }
+                  try { if (typeof usedArr.notifyPropertyChange === 'function') usedArr.notifyPropertyChange('length'); } catch (e) { /* ignore */ }
+                  try { if (typeof item.notifyPropertyChange === 'function') item.notifyPropertyChange('indent'); } catch (e) { /* ignore */ }
                 });
               }
               await new Promise(r => setTimeout(r, 300));
+              // Verify
+              const newVal = typeof item.get === 'function' ? item.get('indent') : item.indent;
+              console.log('[ZyAgent Bridge] After set, Ember indent value:', newVal);
               return true;
             }
           }
@@ -416,7 +507,46 @@
         return false;
       };
 
-      // Strategy 2: Horizontal drag
+      // Strategy 2: Find the Ember component on the sortable list element and
+      // invoke its "onChange" / "onDragEnd" action directly, simulating what
+      // happens when a user finishes a drag at the correct X position.
+      const tryEmberAction = async () => {
+        try {
+          // Find the Ember component attached to the .sortable used list or .two-reorderable-lists
+          const targets = [usedList, usedList.parentElement, container,
+            container.querySelector('.two-reorderable-lists')].filter(Boolean);
+          for (const target of targets) {
+            for (const key of Object.keys(target)) {
+              if (!key.startsWith('__ember') && !key.startsWith('__EMBER')) continue;
+              const ref = target[key];
+              if (!ref || typeof ref !== 'object') continue;
+              // Look for component with actions/handlers
+              const comp = ref.component || ref;
+              if (!comp) continue;
+              // Find action handlers that might handle sort/reorder
+              const actionNames = Object.keys(comp).filter(k =>
+                /sort|drag|reorder|move|change|update|drop/i.test(k) && typeof comp[k] === 'function'
+              );
+              if (actionNames.length > 0) {
+                console.log('[ZyAgent Bridge] Found component actions:', actionNames);
+              }
+              // Also check args for action references
+              if (ref.args) {
+                const argNames = Object.keys(ref.args).filter(k =>
+                  /sort|drag|reorder|move|change|update|drop|indent/i.test(k)
+                );
+                if (argNames.length > 0) {
+                  console.log('[ZyAgent Bridge] Found component args:', argNames, '=', argNames.map(k => typeof ref.args[k]));
+                }
+              }
+            }
+          }
+        } catch (e) { console.log('[ZyAgent Bridge] Ember action search error:', e.message); }
+        return false;
+      };
+
+      // Strategy 3: Horizontal drag — use BOTH HTML5 drag events and mouse events
+      // zyBooks may use either ember-sortable (HTML5 drag) or mouse-based drag
       const doDragIndent = async () => {
         block.scrollIntoView({ behavior: 'instant', block: 'center' });
         await new Promise(r => setTimeout(r, 50));
@@ -425,15 +555,40 @@
         const lr = usedList.getBoundingClientRect();
         const tx = lr.x + 10 + ((desiredIndent + 0.5) * INDENT_PX);
 
+        // Try HTML5 drag events first (ember-sortable uses these)
+        try {
+          const dt = new DataTransfer();
+          block.setAttribute('draggable', 'true');
+          block.dispatchEvent(new DragEvent('dragstart', { bubbles: true, cancelable: true, clientX: sx, clientY: sy, dataTransfer: dt, view: window }));
+          await new Promise(r => setTimeout(r, 200));
+          for (let i = 1; i <= 8; i++) {
+            const cx = sx + (tx - sx) * (i / 8);
+            usedList.dispatchEvent(new DragEvent('dragover', { bubbles: true, cancelable: true, clientX: cx, clientY: sy, dataTransfer: dt, view: window }));
+            await new Promise(r => setTimeout(r, 30));
+          }
+          await new Promise(r => setTimeout(r, 100));
+          usedList.dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, clientX: tx, clientY: sy, dataTransfer: dt, view: window }));
+          block.dispatchEvent(new DragEvent('dragend', { bubbles: true, cancelable: true, clientX: tx, clientY: sy, dataTransfer: dt, view: window }));
+          await new Promise(r => setTimeout(r, 300));
+          const afterDrag = parseInt(block.style.marginLeft) || 0;
+          if (Math.round(afterDrag / INDENT_PX) === desiredIndent) return true;
+        } catch (e) { console.log('[ZyAgent Bridge] HTML5 drag indent error:', e.message); }
+
+        // Fall back to pointer+mouse events
+        block.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, clientX: sx, clientY: sy, button: 0, pointerId: 1, pointerType: 'mouse', view: window }));
         block.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, clientX: sx, clientY: sy, button: 0, view: window }));
         await new Promise(r => setTimeout(r, 300));
+        document.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, cancelable: true, clientX: sx + 2, clientY: sy, button: 0, pointerId: 1, pointerType: 'mouse', view: window }));
         document.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, cancelable: true, clientX: sx + 2, clientY: sy, button: 0, view: window }));
         await new Promise(r => setTimeout(r, 80));
         for (let i = 1; i <= 10; i++) {
-          document.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, cancelable: true, clientX: sx + (tx - sx) * (i / 10), clientY: sy, button: 0, view: window }));
-          await new Promise(r => setTimeout(r, 20));
+          const cx = sx + (tx - sx) * (i / 10);
+          document.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, cancelable: true, clientX: cx, clientY: sy, button: 0, pointerId: 1, pointerType: 'mouse', view: window }));
+          document.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, cancelable: true, clientX: cx, clientY: sy, button: 0, view: window }));
+          await new Promise(r => setTimeout(r, 25));
         }
         await new Promise(r => setTimeout(r, 200));
+        document.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, cancelable: true, clientX: tx, clientY: sy, button: 0, pointerId: 1, pointerType: 'mouse', view: window }));
         document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, clientX: tx, clientY: sy, button: 0, view: window }));
         await new Promise(r => setTimeout(r, 300));
         const newMargin = parseInt(block.style.marginLeft) || 0;
@@ -442,45 +597,84 @@
 
       // Run strategies
       (async () => {
-        // Try Ember model first
+        // Strategy 1: Try Ember model set
         const emberOk = await tryEmberIndent();
         if (emberOk) {
+          block.style.marginLeft = desiredMargin + 'px';
           await new Promise(r => setTimeout(r, 300));
-          const newM = parseInt(block.style.marginLeft) || 0;
-          if (Math.round(newM / INDENT_PX) === desiredIndent) {
-            document.dispatchEvent(new CustomEvent('zyagent-ace-response', { detail: { requestId, success: true, method: 'ember-indent' } }));
-            return;
-          }
+          document.dispatchEvent(new CustomEvent('zyagent-ace-response', { detail: { requestId, success: true, method: 'ember-indent' } }));
+          return;
         }
 
-        // Try horizontal drag
+        // Strategy 2: Try finding Ember component actions (diagnostic/exploratory)
+        await tryEmberAction();
+
+        // Strategy 3: Try horizontal drag (HTML5 + mouse + pointer)
         const dragOk = await doDragIndent();
         if (dragOk) {
           document.dispatchEvent(new CustomEvent('zyagent-ace-response', { detail: { requestId, success: true, method: 'horizontal-drag' } }));
           return;
         }
 
-        // Direct DOM set
+        // Strategy 4: Direct DOM set + Ember ref walk + data attribute
         block.style.marginLeft = desiredMargin + 'px';
-        if (block.hasAttribute('data-indent')) block.setAttribute('data-indent', String(desiredIndent));
-        let el2 = block;
-        for (let d = 0; d < 5 && el2; d++) {
+        block.setAttribute('data-indent', String(desiredIndent));
+
+        // Walk block element itself, parents, and children for __ember/__EMBER refs
+        const elementsToCheck = [block];
+        // Children of the block
+        for (const child of block.querySelectorAll('*')) elementsToCheck.push(child);
+        // Parents up to 8 levels
+        let el2 = block.parentElement;
+        for (let d = 0; d < 8 && el2; d++) { elementsToCheck.push(el2); el2 = el2.parentElement; }
+
+        let foundEmberRef = false;
+        for (const checkEl of elementsToCheck) {
           try {
-            for (const key of Object.keys(el2).filter(k => k.startsWith('__ember'))) {
-              const ref = el2[key];
-              if (ref) {
-                if (ref.args && 'indent' in ref.args) ref.args.indent = desiredIndent;
-                if (ref.indent !== undefined) ref.indent = desiredIndent;
+            for (const key of Object.keys(checkEl).filter(k => k.startsWith('__ember') || k.startsWith('__EMBER'))) {
+              const ref = checkEl[key];
+              if (!ref || typeof ref !== 'object') continue;
+
+              // Direct properties
+              if (ref.indent !== undefined) { ref.indent = desiredIndent; foundEmberRef = true; }
+              if (ref.indentation !== undefined) { ref.indentation = desiredIndent; foundEmberRef = true; }
+
+              // args object
+              if (ref.args && typeof ref.args === 'object') {
+                for (const prop of Object.keys(ref.args)) {
+                  if (/^indent(ation|Level)?$/.test(prop)) {
+                    ref.args[prop] = desiredIndent;
+                    foundEmberRef = true;
+                  }
+                }
+              }
+
+              // Try Ember.set on component
+              if (ref.component && typeof ref.component.set === 'function') {
+                try { ref.component.set('indent', desiredIndent); foundEmberRef = true; } catch (e) { /* ignore */ }
+              }
+
+              // Try the state/attrs pattern (Glimmer)
+              if (ref.state && typeof ref.state === 'object') {
+                if (ref.state.indent !== undefined) { ref.state.indent = desiredIndent; foundEmberRef = true; }
               }
             }
           } catch (e) { /* skip */ }
-          el2 = el2.parentElement;
         }
+
+        if (foundEmberRef) {
+          console.log('[ZyAgent Bridge] Updated Ember refs via DOM walk');
+          if (window.Ember && window.Ember.run) {
+            try { window.Ember.run.scheduleOnce('afterRender', () => {}); } catch (e) { /* ignore */ }
+          }
+        }
+
         block.dispatchEvent(new Event('change', { bubbles: true }));
+        await new Promise(r => setTimeout(r, 200));
 
         const finalM = parseInt(block.style.marginLeft) || 0;
         const ok = Math.round(finalM / INDENT_PX) === desiredIndent;
-        document.dispatchEvent(new CustomEvent('zyagent-ace-response', { detail: { requestId, success: ok || emberOk, method: ok ? 'direct-dom' : (emberOk ? 'ember-only' : 'FAILED') } }));
+        document.dispatchEvent(new CustomEvent('zyagent-ace-response', { detail: { requestId, success: ok || foundEmberRef, method: foundEmberRef ? 'ember-ref-walk' : (ok ? 'direct-dom' : 'FAILED') } }));
       })();
       return;
 
@@ -806,6 +1000,7 @@
       const model = findEmberSortableModel(container);
       const diagnostic = {
         hasEmber: !!window.Ember, emberVersion: window.Ember && window.Ember.VERSION,
+        hasEmberSet: !!(window.Ember && window.Ember.set),
         foundUnused: !!model?.unusedItems, foundUsed: !!model?.usedItems,
         unusedLen: model?.unusedItems ? (typeof model.unusedItems.get === 'function' ? model.unusedItems.get('length') : model.unusedItems.length) : 0,
         usedLen: model?.usedItems ? (typeof model.usedItems.get === 'function' ? model.usedItems.get('length') : model.usedItems.length) : 0,
@@ -817,11 +1012,48 @@
           const item = typeof model.usedItems.objectAt === 'function' ? model.usedItems.objectAt(i) : model.usedItems[i];
           if (item) {
             const t = typeof item.get === 'function' ? (item.get('text') || item.get('code') || '') : (item.text || item.code || '');
-            const indent = typeof item.get === 'function' ? item.get('indent') : item.indent;
-            items.push({ text: t.substring(0, 40), indent, keys: Object.keys(item).filter(k => !k.startsWith('_')).slice(0, 10) });
+            const allKeys = Object.keys(item).filter(k => !k.startsWith('_'));
+            // Gather all indent-related property values
+            const indentProps = {};
+            for (const k of allKeys) {
+              if (/indent|margin|level|offset|position/i.test(k)) {
+                try {
+                  indentProps[k] = typeof item.get === 'function' ? item.get(k) : item[k];
+                } catch (e) { indentProps[k] = '(error)'; }
+              }
+            }
+            // Also try common names even if not in Object.keys
+            for (const prop of ['indent', 'indentation', 'indentLevel', 'indentPx']) {
+              if (!(prop in indentProps)) {
+                try {
+                  const val = typeof item.get === 'function' ? item.get(prop) : item[prop];
+                  if (val !== undefined) indentProps[prop] = val;
+                } catch (e) { /* ignore */ }
+              }
+            }
+            items.push({
+              text: t.substring(0, 50),
+              indentProps,
+              allKeys,
+              hasSet: typeof item.set === 'function',
+              hasGet: typeof item.get === 'function',
+              type: typeof item,
+              constructor: item.constructor?.name || 'unknown'
+            });
           }
         }
         diagnostic.usedItems = items;
+      }
+      // Also check DOM block data attributes and marginLeft
+      const usedList = container.querySelector('.sortable[data-list-name="used"]');
+      if (usedList) {
+        diagnostic.domBlocks = Array.from(usedList.querySelectorAll('.block')).map(b => ({
+          text: b.textContent.trim().substring(0, 40),
+          marginLeft: b.style.marginLeft,
+          dataIndent: b.getAttribute('data-indent'),
+          dataBlockId: b.getAttribute('data-block-id'),
+          disabled: b.getAttribute('aria-disabled')
+        }));
       }
       document.dispatchEvent(new CustomEvent('zyagent-ace-response', { detail: { requestId, success: true, ...diagnostic } }));
     } catch (err) {

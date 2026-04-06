@@ -118,9 +118,12 @@
       // Challenge activities: content-tool-content-resource WITH .challenge class
       // Must be checked BEFORE generic content-tool since it shares that class.
       // Also check for zyante-progression elements which are another form of challenge.
+      // Also detect programming-challenge-content-resource (Run-button style challenges).
       if (el.classList.contains('challenge') &&
           (el.classList.contains('content-tool-content-resource') ||
-           el.querySelector(':scope > .activity-payload .content-tool-content-resource'))) {
+           el.classList.contains('programming-challenge-content-resource') ||
+           el.querySelector(':scope > .activity-payload .content-tool-content-resource') ||
+           el.querySelector(':scope > .activity-payload .programming-challenge-content-resource'))) {
         addActivity('challenge', el);
 
       } else if (el.querySelector('.zyante-progression-start-button, .zyante-progression-check-button') &&
@@ -148,6 +151,15 @@
       } else if (el.classList.contains('matching-content-resource') ||
                  el.querySelector(':scope > .activity-payload .matching-content-resource')) {
         addActivity('matching', el);
+
+      // Definition matching: custom-content-resource with definition-match-payload
+      // or any activity with zb-sortable term-bank / term-bucket pattern
+      } else if (el.querySelector('.definition-match-payload') ||
+                 el.querySelector('.zb-sortable .term-bank') ||
+                 el.querySelector('.zb-sortable .term-bucket') ||
+                 el.classList.contains('custom-content-resource') && el.querySelector('.zb-sortable')) {
+        addActivity('definition-match', el);
+
       } else if (el.querySelector('.ace_editor, .zyDE-editor, textarea.code-input, .CodeMirror, .zyDE')) {
         addActivity('coding', el);
       } else if (el.querySelector('.question-set-question')) {

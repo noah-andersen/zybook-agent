@@ -566,6 +566,43 @@ When you respond, your answer must contain the trailing newline as an actual new
     return result;
   };
 
+  /**
+   * Set desired indent overrides that will be patched into the XHR/fetch
+   * request body when zyBooks sends the Check submission.
+   * Call this BEFORE clicking the Check button.
+   * @param {Object} indents - { "block text": indentLevel, ... }
+   */
+  ZyAgent.sortableSetDesiredIndents = async function (indents) {
+    const result = await ZyAgent.bridgeRequest('zyagent-sortable-set-desired-indents', {
+      indents
+    }, 5000);
+    return result;
+  };
+
+  /**
+   * Aggressively force indent values into the Ember model by walking
+   * every possible Ember view ref on the block elements.
+   * Call this right before Check as a last-resort sync.
+   * @param {string} containerSelector
+   * @param {Object} indents - { "block text": indentLevel, ... }
+   */
+  ZyAgent.sortableForceEmberIndent = async function (containerSelector, indents) {
+    const result = await ZyAgent.bridgeRequest('zyagent-sortable-force-ember-indent', {
+      containerSelector,
+      indents
+    }, 10000);
+    return result;
+  };
+
+  /**
+   * Read the XHR/fetch log captured by the page bridge.
+   * Useful for diagnostics after clicking Check to see what zyBooks actually sent.
+   */
+  ZyAgent.getXHRLog = async function () {
+    const result = await ZyAgent.bridgeRequest('zyagent-get-xhr-log', {}, 5000);
+    return result;
+  };
+
   // ─── MC Prompt Builders (shared between MC and generic handlers) ───
   ZyAgent.buildMCPrompt = function (question, choices) {
     const choiceText = choices.map((c, i) => `${i}) ${c.text}`).join('\n');

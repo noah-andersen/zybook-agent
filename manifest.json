@@ -40,7 +40,11 @@
         "content/handlers/participation.js",
         "content/handlers/coding.js",
         "content/handlers/matching.js",
+        "content/handlers/definition-match.js",
         "content/handlers/generic.js",
+        "content/handlers/challenge-shared.js",
+        "content/handlers/challenge-parsons.js",
+        "content/handlers/challenge-coding.js",
         "content/handlers/challenge.js",
         "content/handlers/lab.js",
         "content/main.js"

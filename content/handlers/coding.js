@@ -23,7 +23,7 @@
 
     // Gather instructions
     const instructionEl = el.querySelector(
-      '.develop-instructions, .instructions, .challenge-instructions, .zybook-content'
+      '.develop-instructions, .instructions, .challenge-instructions, .activity-instructions, zyinstructions, .zybook-content'
     );
     const instructions = instructionEl ? instructionEl.innerText.trim() : '';
 
@@ -128,10 +128,31 @@ ${isRetry ? '\nYour previous attempt was WRONG. Fix it based on the feedback bel
       }
 
       // Gather feedback for retry
-      const actualOutputEl = el.querySelector('.output, .run-output, .actual-output, .stdout');
+      const actualOutputEl = el.querySelector('.output, .run-output, .actual-output, .stdout, .programming-code-output');
       lastActualOutput = actualOutputEl ? actualOutputEl.innerText.trim() : '';
       const errorEl = el.querySelector('.error-output, .stderr, .compile-error');
       lastError = errorEl ? errorEl.innerText.trim() : '';
+
+      // Also gather from test result rows if available
+      if (!lastActualOutput && !lastError) {
+        const testResults = el.querySelectorAll('.test-result');
+        const feedbackParts = [];
+        for (const tr of testResults) {
+          const header = tr.querySelector('.test-header');
+          if (header) feedbackParts.push(header.innerText.trim());
+          const rows = tr.querySelectorAll('.test-result-row');
+          for (const row of rows) {
+            const label = row.querySelector('.result-row-description');
+            const value = row.querySelector('.programming-code-output, .no-output-result');
+            if (label && value) {
+              feedbackParts.push(`${label.innerText.trim()}: ${value.textContent.trim()}`);
+            }
+          }
+        }
+        if (feedbackParts.length > 0) {
+          lastActualOutput = feedbackParts.join('\n');
+        }
+      }
 
       if (attempt < maxRetries - 1 && (lastActualOutput || lastError)) {
         Z.sendProgress(0, 0, `Coding: attempt ${attempt + 1} failed, retrying...`, 'warn');

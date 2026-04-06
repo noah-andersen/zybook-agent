@@ -85,6 +85,8 @@
         return Z.handleLab(activity, settings);
       case 'matching':
         return Z.handleMatching(activity, settings);
+      case 'definition-match':
+        return Z.handleDefinitionMatch(activity, settings);
       case 'participation':
         return Z.handleParticipation(activity);
       default:
